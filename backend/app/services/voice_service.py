@@ -1,8 +1,6 @@
-import asyncio
-import json
 import logging
-from io import BytesIO
-from typing import Any
+import os
+import tempfile
 
 from openai import AsyncOpenAI
 
@@ -34,9 +32,6 @@ class VoiceSession:
         self.conversation_history: list[dict] = []
 
     async def process_audio(self, audio_bytes: bytes) -> dict | None:
-        """Transcribe audio using Whisper, then run RAG pipeline."""
-        import tempfile, os
-
         self.audio_buffer.extend(audio_bytes)
 
         temp_path = None
@@ -120,7 +115,7 @@ class VoiceSession:
             model="tts-1",
             voice="alloy",
             input=text,
-            response_format="pcm",
+            response_format="mp3",
         )
         return response.content
 

@@ -90,7 +90,5 @@ async def get_voice_config():
     return {
         "model": "whisper-1 + gpt-4o-mini + tts-1",
         "voice": "alloy",
-        "sample_rate": 24000,
-        "channels": 1,
-        "format": "pcm16",
+        "formats": "webm (in) / mp3 (out)",
     }
