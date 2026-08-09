@@ -26,5 +26,5 @@ async def generate_embeddings(texts: list[str]) -> list[list[float]]:
 async def count_tokens(text: str) -> int:
     import tiktoken
 
-    encoding = tiktoken.encoding_for_model(settings.EMBEDDING_MODEL)
+    encoding = tiktoken.get_encoding("cl100k_base")
     return len(encoding.encode(text))

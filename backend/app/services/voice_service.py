@@ -14,7 +14,7 @@ settings = get_settings()
 
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-VOICE_SYSTEM_PROMPT = """You are a helpful, friendly voice AI support agent for Nimbus Home Goods Co.
+VOICE_SYSTEM_PROMPT_TEMPLATE = """You are a helpful, friendly voice AI support agent for {org_name}.
 Answer customer questions using ONLY the provided knowledge base context.
 
 RULES:
@@ -26,9 +26,10 @@ RULES:
 
 
 class VoiceSession:
-    def __init__(self, tenant_id: int, user_id: int):
+    def __init__(self, tenant_id: int, user_id: int, org_name: str = "this organization"):
         self.tenant_id = tenant_id
         self.user_id = user_id
+        self.org_name = org_name
         self.audio_buffer = bytearray()
         self.conversation_history: list[dict] = []
 
@@ -87,7 +88,7 @@ class VoiceSession:
         ) if results else "No relevant documents found."
 
         messages = [
-            {"role": "system", "content": VOICE_SYSTEM_PROMPT},
+            {"role": "system", "content": VOICE_SYSTEM_PROMPT_TEMPLATE.format(org_name=self.org_name)},
         ]
 
         for msg in self.conversation_history[-6:]:

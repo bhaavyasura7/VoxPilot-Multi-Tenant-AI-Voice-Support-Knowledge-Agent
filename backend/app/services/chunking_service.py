@@ -16,7 +16,9 @@ def chunk_text(
     if overlap is None:
         overlap = settings.CHUNK_OVERLAP
 
-    encoding = tiktoken.encoding_for_model(settings.EMBEDDING_MODEL)
+    # text-embedding-3-small uses cl100k_base; encoding_for_model() doesn't
+    # recognize embedding model names directly — use the base encoding.
+    encoding = tiktoken.get_encoding("cl100k_base")
     tokens = encoding.encode(text)
     chunks = []
 

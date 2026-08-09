@@ -31,7 +31,8 @@ async def upload_document(
     if error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error)
 
-    file_type = "pdf" if "pdf" in (file.content_type or "") else "docx"
+    from app.services.document_service import ALLOWED_TYPES
+    file_type = ALLOWED_TYPES.get(file.content_type or "", "unknown")
     saved = await save_upload(content, file.filename or "unknown", current_user.tenant_id)
 
     document = Document(
