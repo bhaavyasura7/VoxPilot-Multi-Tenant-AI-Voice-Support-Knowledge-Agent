@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VoxPilot Voice Agent</title>
+<title>VoxPilot WebRTC Voice</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:system-ui,sans-serif; background:#0f172a; color:#e2e8f0; min-height:100vh; display:flex; justify-content:center; align-items:center; padding:1rem; }
@@ -11,7 +11,6 @@ body { font-family:system-ui,sans-serif; background:#0f172a; color:#e2e8f0; min-
 h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#6366f1,#a855f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
 .subtitle { color:#94a3b8; margin-bottom:1.5rem; font-size:.85rem; }
 
-/* auth panel */
 .auth-panel { background:#1e293b; border:1px solid #334155; border-radius:.75rem; padding:1.25rem; margin-bottom:1rem; text-align:left; }
 .field { padding:.7rem; border-radius:.5rem; border:1px solid #334155; background:#0f172a; color:#e2e8f0; font-size:.85rem; width:100%; margin-bottom:.6rem; }
 .field:focus { outline:none; border-color:#6366f1; }
@@ -23,12 +22,11 @@ h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#63
 .btn:disabled { opacity:.5; cursor:not-allowed; }
 .auth-msg { color:#fca5a5; font-size:.78rem; margin-top:.5rem; min-height:1rem; }
 
-/* user row */
 .user-row { display:flex; align-items:center; justify-content:center; gap:.75rem; margin-bottom:.75rem; }
 .user-label { color:#94a3b8; font-size:.8rem; }
 
 .status-bar { display:flex; align-items:center; justify-content:center; gap:.5rem; margin-bottom:1rem; }
-.status-dot { width:10px; height:10px; border-radius:50%; background:#475569; flex-shrink:0; }
+.status-dot { width:10px; height:10px; border-radius:50%; background:#475569; }
 .status-dot.connected { background:#22c55e; }
 .status-dot.listening { background:#3b82f6; animation:pulse .6s infinite; }
 .status-dot.processing { background:#f59e0b; animation:pulse 1s infinite; }
@@ -49,6 +47,7 @@ h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#63
 .bubble.tool { background:#1a2e1a; border-left:3px solid #22c55e; font-size:.75rem; color:#86efac; }
 .bubble.error { background:#422006; border-left:3px solid #ef4444; color:#fca5a5; font-size:.78rem; }
 .bubble.assistant.streaming { opacity:.85; }
+.bubble.system { background:#1e293b; border-left:3px solid #94a3b8; color:#94a3b8; font-size:.78rem; }
 .text-row { display:flex; gap:.5rem; }
 .text-row input { flex:1; padding:.7rem; border-radius:.5rem; border:1px solid #334155; background:#1e293b; color:#e2e8f0; font-size:.85rem; }
 .text-row input:focus { outline:none; border-color:#6366f1; }
@@ -59,7 +58,7 @@ h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#63
 <body>
 <div class="container">
   <h1>VoxPilot</h1>
-  <p class="subtitle">AI Voice Support — Realtime</p>
+  <p class="subtitle">AI Voice Support — WebRTC</p>
 
   <div class="auth-panel" id="authPanel">
     <input class="field" id="authName" placeholder="Your name (new account)">
@@ -84,7 +83,7 @@ h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#63
     </div>
 
     <button class="mic-btn" id="micBtn">🎤</button>
-    <p class="prompt" id="prompt">Click mic to start voice chat</p>
+    <p class="prompt" id="prompt">Click mic to start WebRTC voice chat</p>
 
     <div class="conversation" id="conversation"></div>
 
@@ -96,21 +95,18 @@ h1 { font-size:2rem; margin-bottom:.25rem; background:linear-gradient(135deg,#63
 </div>
 
 <script>
-const SAMPLE_RATE = 24000;
 const API_BASE = window.location.origin;
 const WS_BASE = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
 const TOKEN_KEY = 'voxpilot_token';
 const EMAIL_KEY = 'voxpilot_email';
 
 let ws = null;
-let audioCtx = null;
+let pc = null;
 let micStream = null;
-let scriptNode = null;
 let isMicActive = false;
 let serverToken = '';
 let responseTextEl = null;
-let audioChunks = [];
-let nextPlayTime = 0;
+let remoteAudioEl = null;
 
 const micBtn = document.getElementById('micBtn');
 const statusDot = document.getElementById('statusDot');
@@ -154,7 +150,7 @@ function showAuth(msg) {
   mainPanel.style.display = 'none';
   authPanel.style.display = 'block';
   if (msg) authMsg.textContent = msg;
-  disconnectWS();
+  disconnectSignaling();
 }
 
 function showMain() {
@@ -163,9 +159,7 @@ function showMain() {
   userLabel.textContent = 'Signed in as ' + (localStorage.getItem(EMAIL_KEY) || '');
 }
 
-function setAuthMsg(text) {
-  authMsg.textContent = text || '';
-}
+function setAuthMsg(text) { authMsg.textContent = text || ''; }
 
 async function api(path, body) {
   const res = await fetch(API_BASE + path, {
@@ -174,9 +168,7 @@ async function api(path, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.detail || ('Request failed (' + res.status + ')'));
-  }
+  if (!res.ok) throw new Error(data.detail || ('Request failed (' + res.status + ')'));
   return data;
 }
 
@@ -184,17 +176,11 @@ async function doLogin() {
   const email = document.getElementById('authEmail').value.trim();
   const password = document.getElementById('authPassword').value;
   if (!email || !password) { setAuthMsg('Enter email and password.'); return; }
-
-  setAuthMsg('');
-  setButtonsBusy(true);
+  setAuthMsg(''); setButtonsBusy(true);
   try {
     const data = await api('/api/v1/auth/login', { email, password });
     onAuthed(data.access_token, email);
-  } catch (e) {
-    setAuthMsg(e.message);
-  } finally {
-    setButtonsBusy(false);
-  }
+  } catch (e) { setAuthMsg(e.message); } finally { setButtonsBusy(false); }
 }
 
 async function doRegister() {
@@ -203,17 +189,11 @@ async function doRegister() {
   const password = document.getElementById('authPassword').value;
   if (!name) { setAuthMsg('Enter your name to create an account.'); return; }
   if (!email || !password) { setAuthMsg('Enter email and password.'); return; }
-
-  setAuthMsg('');
-  setButtonsBusy(true);
+  setAuthMsg(''); setButtonsBusy(true);
   try {
     const data = await api('/api/v1/auth/register', { name, email, password });
     onAuthed(data.access_token, email);
-  } catch (e) {
-    setAuthMsg(e.message);
-  } finally {
-    setButtonsBusy(false);
-  }
+  } catch (e) { setAuthMsg(e.message); } finally { setButtonsBusy(false); }
 }
 
 function setButtonsBusy(busy) {
@@ -227,7 +207,7 @@ function onAuthed(token, email) {
   localStorage.setItem(EMAIL_KEY, email);
   showMain();
   scheduleExpiry();
-  connectWS();
+  connectSignaling();
 }
 
 function logout(msg) {
@@ -261,26 +241,25 @@ function setStatus(state, text) {
   statusText.textContent = text;
 }
 
-/* ---------- websocket ---------- */
+/* ---------- signaling ---------- */
 
-function connectWS() {
+function connectSignaling() {
   if (!serverToken) return;
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  const url = `${WS_BASE}/api/v1/voice/realtime?token=${encodeURIComponent(serverToken)}`;
+  const url = `${WS_BASE}/api/v1/voice/webrtc?token=${encodeURIComponent(serverToken)}`;
   ws = new WebSocket(url);
-  ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    setStatus('idle', 'Connected — click mic to speak');
-    promptEl.textContent = 'Click mic to start continuous voice chat';
+    setStatus('connected', 'Connected — click mic to start');
+    promptEl.textContent = 'Click mic to start WebRTC voice chat';
   };
 
   ws.onerror = () => {
     if (serverToken && isTokenExpired(serverToken)) {
       logout('Session expired — please sign in again.');
     } else {
-      setStatus('error', 'Connection failed');
+      setStatus('error', 'Signaling failed');
       promptEl.textContent = 'Connection error';
     }
   };
@@ -295,39 +274,26 @@ function connectWS() {
   };
 
   ws.onmessage = (event) => {
-    if (event.data instanceof ArrayBuffer) {
-      handleAudioChunk(new Uint8Array(event.data));
-    } else if (typeof event.data === 'string') {
-      try {
-        const data = JSON.parse(event.data);
-        handleMessage(data);
-      } catch(e) {}
-    }
+    try {
+      const data = JSON.parse(event.data);
+      handleMessage(data);
+    } catch(e) {}
   };
 }
 
-function disconnectWS() {
-  if (ws) {
-    ws.onclose = null;
-    try { ws.close(); } catch(e) {}
-    ws = null;
-  }
+function disconnectSignaling() {
+  if (ws) { ws.onclose = null; try { ws.close(); } catch(e) {} ws = null; }
   if (isMicActive) stopMic();
 }
 
 function handleMessage(data) {
   switch(data.type) {
-    case 'status':
-      handleStatus(data.state);
-      break;
+    case 'answer': handleAnswer(data.sdp); break;
+    case 'ice_candidate': handleRemoteIce(data); break;
+    case 'status': handleStatus(data.state); break;
     case 'transcript':
       addBubble('transcript', 'You: ' + data.text);
-      audioChunks = [];
-      nextPlayTime = 0;
-      if (responseTextEl) {
-        responseTextEl.classList.remove('streaming');
-        responseTextEl = null;
-      }
+      if (responseTextEl) { responseTextEl.classList.remove('streaming'); responseTextEl = null; }
       break;
     case 'text_delta':
       if (!responseTextEl) {
@@ -338,16 +304,10 @@ function handleMessage(data) {
       conversation.scrollTop = conversation.scrollHeight;
       break;
     case 'text_done':
-      if (responseTextEl) {
-        responseTextEl.classList.remove('streaming');
-      }
+      if (responseTextEl) responseTextEl.classList.remove('streaming');
       break;
-    case 'tool_call':
-      addBubble('tool', '🔧 ' + data.name);
-      break;
-    case 'error':
-      addBubble('error', 'Error: ' + data.text);
-      break;
+    case 'tool_call': addBubble('tool', '🔧 ' + data.name); break;
+    case 'error': addBubble('error', 'Error: ' + data.text); break;
   }
 }
 
@@ -356,70 +316,84 @@ function handleStatus(state) {
     case 'listening': setStatus('listening', 'Listening...'); break;
     case 'processing': setStatus('processing', 'Thinking...'); break;
     case 'speaking': setStatus('speaking', 'Speaking...'); break;
-    case 'idle':
-      setStatus('idle', 'Connected');
-      if (!isMicActive) promptEl.textContent = 'Click mic to speak again';
-      break;
+    case 'idle': setStatus('idle', 'Connected'); break;
   }
 }
 
-/* ---------- audio ---------- */
+/* ---------- webrtc ---------- */
 
-function handleAudioChunk(pcmBytes) {
-  if (!audioCtx) {
-    audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    nextPlayTime = audioCtx.currentTime;
+async function handleAnswer(sdp) {
+  if (!pc) return;
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+    addBubble('system', 'WebRTC media connected');
+  } catch(e) {
+    addBubble('error', 'Failed to set remote SDP: ' + e.message);
   }
+}
 
-  const int16 = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.length / 2);
-  const float32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 32768;
-  }
-
-  const audioBuffer = audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
-  audioBuffer.getChannelData(0).set(float32);
-
-  const source = audioCtx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.connect(audioCtx.destination);
-
-  const now = audioCtx.currentTime;
-  if (nextPlayTime < now) nextPlayTime = now;
-  source.start(nextPlayTime);
-  nextPlayTime += audioBuffer.duration;
+async function handleRemoteIce(data) {
+  if (!pc || !data.candidate) return;
+  try {
+    await pc.addIceCandidate(new RTCIceCandidate({
+      candidate: data.candidate,
+      sdpMid: data.sdpMid,
+      sdpMLineIndex: data.sdpMLineIndex,
+    }));
+  } catch(e) {}
 }
 
 async function startMic() {
   if (!serverToken || isMicActive) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     promptEl.textContent = 'Connecting...';
-    connectWS();
-    await new Promise(r => setTimeout(r, 500));
+    connectSignaling();
+    await new Promise(r => setTimeout(r, 800));
   }
 
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+      audio: { sampleRate: 24000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
     });
 
-    audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const source = audioCtx.createMediaStreamSource(micStream);
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
-    scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-    scriptNode.onaudioprocess = (e) => {
-      if (!isMicActive || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const int16 = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const s = Math.max(-1, Math.min(1, input[i]));
-        int16[i] = s < 0 ? s * 32768 : s * 32767;
+    micStream.getTracks().forEach(track => pc.addTrack(track, micStream));
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    pc.ontrack = (event) => {
+      if (event.track.kind === 'audio' && event.streams[0]) {
+        if (remoteAudioEl) { remoteAudioEl.remove(); }
+        remoteAudioEl = document.createElement('audio');
+        remoteAudioEl.srcObject = event.streams[0];
+        remoteAudioEl.autoplay = true;
+        remoteAudioEl.play().catch(() => {});
+        document.body.appendChild(remoteAudioEl);
       }
-      ws.send(int16.buffer);
     };
 
-    source.connect(scriptNode);
-    scriptNode.connect(audioCtx.destination);
+    pc.onicecandidate = (event) => {
+      if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'ice_candidate',
+          candidate: event.candidate.candidate,
+          sdpMid: event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+        }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      const state = pc.iceConnectionState;
+      if (state === 'disconnected' || state === 'failed') {
+        addBubble('error', 'ICE connection ' + state);
+        stopMic();
+      }
+    };
+
+    const offer = await pc.createOffer({ offerToReceiveAudio: true });
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
 
     isMicActive = true;
     micBtn.classList.add('active');
@@ -439,10 +413,11 @@ function stopMic() {
   micBtn.classList.remove('active');
   micBtn.textContent = '🎤';
 
-  if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
+  if (pc) { pc.close(); pc = null; }
   if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (remoteAudioEl) { remoteAudioEl.remove(); remoteAudioEl = null; }
 
-  promptEl.textContent = 'Click mic to start speaking';
+  promptEl.textContent = 'Click mic to start again';
   setStatus('idle', 'Connected');
 }
 
@@ -464,13 +439,11 @@ async function sendText() {
   input.value = '';
 
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    connectWS();
+    connectSignaling();
     await new Promise(r => setTimeout(r, 500));
   }
 
   addBubble('user', '💬 ' + text);
-  audioChunks = [];
-  nextPlayTime = 0;
   if (responseTextEl) { responseTextEl.classList.remove('streaming'); responseTextEl = null; }
 
   ws.send(JSON.stringify({ type: 'text_input', text: text }));
@@ -484,7 +457,7 @@ async function sendText() {
     serverToken = token;
     showMain();
     scheduleExpiry();
-    connectWS();
+    connectSignaling();
   } else {
     if (token) localStorage.removeItem(TOKEN_KEY);
     showAuth();

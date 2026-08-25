@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     RAG_TOP_K: int = 4
     RAG_SCORE_THRESHOLD: float = 0.5
     LLM_MODEL: str = "gpt-4o-mini"
+    REALTIME_MODEL: str = "gpt-realtime"
+    REALTIME_TRANSCRIPTION_MODEL: str = "whisper-1"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

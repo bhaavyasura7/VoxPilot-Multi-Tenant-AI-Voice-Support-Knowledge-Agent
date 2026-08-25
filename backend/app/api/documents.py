@@ -50,6 +50,7 @@ async def upload_document(
 
     if background_tasks:
         background_tasks.add_task(process_document_by_id, document.id)
+        background_tasks.add_task(_invalidate_tenant_cache, current_user.tenant_id)
 
     return DocumentUploadResponse(
         id=document.id,
@@ -120,4 +121,12 @@ async def delete_document(
     from app.services.qdrant_service import delete_by_document_id
     delete_by_document_id(current_user.tenant_id, document_id)
 
+    from app.services.cache_service import invalidate_rag_cache
+    await invalidate_rag_cache(current_user.tenant_id)
+
     return {"message": "Document deleted successfully"}
+
+
+async def _invalidate_tenant_cache(tenant_id: int):
+    from app.services.cache_service import invalidate_rag_cache
+    await invalidate_rag_cache(tenant_id)

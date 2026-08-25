@@ -1,8 +1,14 @@
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
+import enum
 
 from app.database import Base
+
+
+class ConversationType(str, enum.Enum):
+    TEXT = "text"
+    VOICE = "voice"
 
 
 class Conversation(Base):
@@ -12,6 +18,7 @@ class Conversation(Base):
     tenant_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     title = Column(String, nullable=True)
+    type = Column(String, nullable=False, default=ConversationType.TEXT.value)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

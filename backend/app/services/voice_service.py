@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import tempfile
@@ -6,21 +7,39 @@ from openai import AsyncOpenAI
 
 from app.config import get_settings
 from app.services.pipeline import retrieve_relevant_chunks
+from app.services.agent_service import AgentSession
+from app.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
 
-VOICE_SYSTEM_PROMPT_TEMPLATE = """You are a helpful, friendly voice AI support agent for {org_name}.
-Answer customer questions using ONLY the provided knowledge base context.
+SESSION_TTL = 86400  # 24 hours
 
-RULES:
-- Keep spoken answers concise and natural — under 2-3 sentences.
-- Base your answer ONLY on the provided context.
-- If context doesn't answer the question, say: "I couldn't find that in our knowledge base."
-- Never invent policies or information.
-- Be warm and conversational."""
+
+def _session_key(tenant_id: int, user_id: int) -> str:
+    return f"session:voice:{tenant_id}:{user_id}"
+
+
+async def _load_history(tenant_id: int, user_id: int) -> list[dict]:
+    try:
+        r = get_redis()
+        data = await r.get(_session_key(tenant_id, user_id))
+        if data:
+            return json.loads(data)
+    except Exception:
+        pass
+    return []
+
+
+async def _save_history(tenant_id: int, user_id: int, history: list[dict]):
+    try:
+        r = get_redis()
+        key = _session_key(tenant_id, user_id)
+        await r.setex(key, SESSION_TTL, json.dumps(history))
+    except Exception:
+        pass
 
 
 class VoiceSession:
@@ -30,6 +49,12 @@ class VoiceSession:
         self.org_name = org_name
         self.audio_buffer = bytearray()
         self.conversation_history: list[dict] = []
+
+    @classmethod
+    async def create(cls, tenant_id: int, user_id: int, org_name: str = "this organization"):
+        session = cls(tenant_id, user_id, org_name)
+        session.conversation_history = await _load_history(tenant_id, user_id)
+        return session
 
     async def process_audio(self, audio_bytes: bytes) -> dict | None:
         self.audio_buffer.extend(audio_bytes)
@@ -49,10 +74,11 @@ class VoiceSession:
 
             logger.info(f"Transcribed: '{transcript}' (tenant={self.tenant_id})")
 
-            answer, sources = await self._rag_query(str(transcript))
+            answer, sources = await self._process_query(str(transcript))
 
             self.conversation_history.append({"role": "user", "content": str(transcript)})
             self.conversation_history.append({"role": "assistant", "content": answer})
+            await _save_history(self.tenant_id, self.user_id, self.conversation_history)
 
             self.audio_buffer.clear()
 
@@ -70,38 +96,22 @@ class VoiceSession:
             if temp_path and os.path.exists(temp_path):
                 os.unlink(temp_path)
 
-    async def _rag_query(self, query: str) -> tuple[str, list[dict]]:
+    async def _process_query(self, query: str) -> tuple[str, list[dict]]:
         results = await retrieve_relevant_chunks(
             query=query,
             tenant_id=self.tenant_id,
             top_k=4,
         )
 
-        context_text = "\n\n---\n\n".join(
-            f"[{r['document_name']}, p{r['page_number']}]: {r['content'][:500]}"
-            for r in results
-        ) if results else "No relevant documents found."
-
-        messages = [
-            {"role": "system", "content": VOICE_SYSTEM_PROMPT_TEMPLATE.format(org_name=self.org_name)},
-        ]
-
-        for msg in self.conversation_history[-6:]:
-            messages.append(msg)
-
-        messages.append({
-            "role": "user",
-            "content": f"Knowledge base context:\n{context_text}\n\nCustomer question: {query}",
-        })
-
-        response = await openai_client.chat.completions.create(
-            model=settings.LLM_MODEL,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=300,
+        agent = AgentSession(
+            tenant_id=self.tenant_id,
+            user_id=self.user_id,
+            org_name=self.org_name,
+            voice_mode=True,
         )
 
-        answer = response.choices[0].message.content or "I couldn't generate a response."
+        history_for_agent = self.conversation_history[-6:] if self.conversation_history else None
+        answer, _ = await agent.run(query, history_for_agent)
 
         sources = [
             {"document_name": r["document_name"], "page_number": r["page_number"], "score": r["score"]}
@@ -120,7 +130,8 @@ class VoiceSession:
         return response.content
 
     async def process_text(self, text: str) -> dict:
-        answer, sources = await self._rag_query(text)
+        answer, sources = await self._process_query(text)
         self.conversation_history.append({"role": "user", "content": text})
         self.conversation_history.append({"role": "assistant", "content": answer})
+        await _save_history(self.tenant_id, self.user_id, self.conversation_history)
         return {"answer": answer, "sources": sources}

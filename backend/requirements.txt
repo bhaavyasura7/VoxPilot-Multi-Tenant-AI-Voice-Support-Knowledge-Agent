@@ -20,3 +20,4 @@ aiofiles==24.1.0
 tiktoken==0.8.0
 email-validator==2.2.0
 websockets==14.1
+aiortc==1.14.0

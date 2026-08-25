@@ -5,11 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User
+from app.models.organization import Organization
 from app.models.conversation import Conversation, Message
 from app.schemas.chat import ChatRequest, ConversationResponse, ChatMessageResponse
 from app.auth.deps import get_current_user
 from app.services.pipeline import retrieve_relevant_chunks
-from app.services.openai_service import generate_rag_answer
+from app.services.agent_service import AgentSession
 
 router = APIRouter(prefix="/api/v1/chat", tags=["chat"])
 
@@ -52,10 +53,11 @@ async def chat(
     db.add(user_msg)
     await db.commit()
 
-    results = await retrieve_relevant_chunks(
-        query=body.message,
-        tenant_id=current_user.tenant_id,
+    org_result = await db.execute(
+        select(Organization).where(Organization.id == current_user.tenant_id)
     )
+    org = org_result.scalar_one_or_none()
+    org_name = org.name if org else "this organization"
 
     history_result = await db.execute(
         select(Message)
@@ -70,11 +72,17 @@ async def chat(
         if msg.id != user_msg.id
     ]
 
-    answer = await generate_rag_answer(
+    results = await retrieve_relevant_chunks(
         query=body.message,
-        context_chunks=results,
-        conversation_history=conversation_history if conversation_history else None,
+        tenant_id=current_user.tenant_id,
     )
+
+    agent = AgentSession(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        org_name=org_name,
+    )
+    answer, tools_used = await agent.run(body.message, conversation_history)
 
     assistant_msg = Message(
         conversation_id=conversation.id,
@@ -97,6 +105,7 @@ async def chat(
         "conversation_id": conversation.id,
         "answer": answer,
         "sources": sources,
+        "tools_used": tools_used,
     }
 
 

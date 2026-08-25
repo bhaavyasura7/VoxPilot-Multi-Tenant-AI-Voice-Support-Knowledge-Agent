@@ -49,7 +49,7 @@ async def process_document_by_id(document_id: int) -> None:
             if not pages or all(not p["content"].strip() for p in pages):
                 raise ValueError("No extractable text found in document.")
 
-            chunks = chunk_pages(pages)
+            chunks = await chunk_pages(pages)
 
             if not chunks:
                 raise ValueError("Document chunking produced no chunks.")
@@ -123,6 +123,12 @@ async def retrieve_relevant_chunks(
     score_threshold: float | None = None,
 ) -> list[dict]:
     from app.services.qdrant_service import search as qdrant_search
+    from app.services.cache_service import get_cached_rag, set_cached_rag
+
+    cached = await get_cached_rag(tenant_id, query)
+    if cached is not None:
+        logger.debug(f"RAG cache hit for tenant={tenant_id}, query='{query[:50]}'")
+        return cached
 
     query_embedding = await generate_embedding(query)
     results = qdrant_search(
@@ -131,6 +137,10 @@ async def retrieve_relevant_chunks(
         top_k=top_k,
         score_threshold=score_threshold,
     )
+
+    if results:
+        await set_cached_rag(tenant_id, query, results)
+
     return results
 
 
